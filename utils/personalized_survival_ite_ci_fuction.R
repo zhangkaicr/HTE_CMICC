@@ -16,7 +16,63 @@
 #     install.packages(pkg, repos = "https://cloud.r-project.org")
 #   }
 # }
-
+library(personalized)   # 用于亚组识别与个性化治疗效应估计
+library(here)           # 便于相对路径管理
+library(tidyverse)      # 数据清洗与可视化
+library(openxlsx)       # 读写 Excel 文件
+library(survival)       # 生存分析基础函数
+library(fastDummies)    # 快速生成哑变量
+library(MatchIt)
+library("MatchIt")
+library(tidyverse)
+library(here)
+library(openxlsx)
+library(cobalt)
+library(compareGroups)
+library(survival)
+library(broom)
+library(personalized)   # 用于亚组识别与个性化治疗效应估计
+library(here)           # 便于相对路径管理
+library(tidyverse)      # 数据清洗与可视化
+library(openxlsx)       # 读写 Excel 文件
+library(survival)       # 生存分析基础函数
+library(fastDummies)    # 快速生成哑变量
+library(tidyverse)  # 用于数据处理和可视化的综合工具包
+library(PSweight)  # 实现倾向性评分匹配的专用包
+library(openxlsx)   # 用于读写Excel格式文件
+library(here)       # 用于项目路径的智能管理
+library(survival)   # 提供生存分析的核心功能
+library(survminer)  # 用于生存分析结果的可视化
+library(ggsci)      # 提供科学期刊标准配色方案
+library(tidysmd)    # 用于计算标准化均值差异
+library(propensity) # 提供倾向性评分分析工具
+library(halfmoon)   # 用于倾向性评分的诊断分析     # 用于评估协变量平衡性
+library(mlr3verse)  # 机器学习框架包
+library(predRupdate)  # 用于预测模型更新
+library(broom)
+library(jskm)
+library(survey)
+library(gtsummary)
+library(tidyverse)
+library(survival)
+library(survey)
+library(rempsyc)
+library(remotes)
+library(HTEPredictionMetrics)
+library(tidyverse)                                       # 数据清洗与可视化核心包（dplyr/ggplot2/readr 等）
+library(grf)                                             # 广义随机森林，用于因果生存分析
+library(survival)                                        # 生存分析基础函数（Surv, survfit 等）
+library(fastDummies)                                     # 快速将分类变量转为哑变量
+library(here)                                            # 以项目根目录为基准的稳健路径解析
+library(visdat)                                          # 可视化缺失值分布
+library(ggpubr)
+library(survminer)
+library(personalized)   # 用于亚组识别与个性化治疗效应估计
+library(here)           # 便于相对路径管理
+library(tidyverse)      # 数据清洗与可视化
+library(openxlsx)       # 读写 Excel 文件
+library(survival)       # 生存分析基础函数
+library(fastDummies)  
 # 加载本脚本依赖包
 library(personalized)
 library(survival)
@@ -235,40 +291,38 @@ calc_survival_ite_ci <- function(
 # 固定随机种子，保证演示数据可复现
 set.seed(20260416)
 
-# 演示数据规模
-n_obs <- 300L
-n_vars <- 12L
+final_data <- read.xlsx(here("data", "final_data.xlsx"))
+head(final_data)
 
-# 生成协变量矩阵
-x_demo <- matrix(
-  data = rnorm(n_obs * n_vars, sd = 2),
-  nrow = n_obs,
-  ncol = n_vars
+# 2.定义需要的变量---------------------------------
+x_matched <- final_data %>%
+  select(Tumor_border_status,CD4_CD8,Peritumoral_enhancement, 
+  CRP,CPgrade,Radiologic_morphology,NLR,CAperihepatic_99,Neutro,Cr,
+  PDL1,DBIL,BUN,ALB,TumorDiameterMax,
+  Vascular_invasion,Tumor_deposit,  
+  )
+
+# 对所有因子/字符列做哑变量，删除原列，并去掉首个水平以防共线
+x_dummy_matched <- fastDummies::dummy_cols(
+  x_matched,
+  remove_selected_columns = TRUE,
+  remove_first_dummy = TRUE
 )
 
-# 生成观察性治疗分配
-xbetat <- 0.2 + 0.35 * x_demo[, 2] - 0.25 * x_demo[, 7]
-trt_prob <- plogis(xbetat)
-trt01_demo <- rbinom(n_obs, size = 1, prob = trt_prob)
+# 将哑变量数据框转换为矩阵，便于后续算法使用
+x_demo <- as.matrix(x_dummy_matched)
 
-# 生成个体异质性信号
-delta_x <- 0.5 + 0.6 * x_demo[, 1] - 0.5 * x_demo[, 3] + 0.3 * x_demo[, 1] * x_demo[, 4]
+# 提取生存时间
+time_demo <- final_data$OS %>% as.numeric()
 
-# 生成基线风险与治疗效应
-lp_base <- 0.2 * x_demo[, 2] - 0.3 * x_demo[, 5] + 0.15 * x_demo[, 9]
-trt_effect_lp <- -0.45 * delta_x * trt01_demo
+# 提取生存状态（1 = 死亡，0 = 存活/删失），并转为整数型
+status_demo <- final_data$OS_CNSR %>% as.integer()
 
-# 生成事件时间与删失时间
-event_rate <- exp(lp_base + trt_effect_lp)
-event_time <- rexp(n_obs, rate = event_rate)
-censor_time <- rexp(n_obs, rate = 0.12)
+trt01_demo <- final_data$Trt_ITT %>% as.integer()
 
-# 构造观测到的 time/status
-time_demo <- pmin(event_time, censor_time)
-status_demo <- as.integer(event_time <= censor_time)
+patient_id_demo <- final_data$ID
 
-# 构造患者 ID
-patient_id_demo <- seq_len(n_obs)
+
 
 # 调用函数进行计算（B 为可调参数）
 res_demo <- calc_survival_ite_ci(
@@ -277,12 +331,107 @@ res_demo <- calc_survival_ite_ci(
   status = status_demo,
   trt = trt01_demo,
   patient_id = patient_id_demo,
-  B = 10L,
-  nfolds = 5L,
+  B = 5000L,
+  nfolds = 10L,
   prop_crossfit = TRUE,
   prop_nfolds_crossfit = 5L,
   prop_cv_metric = "auc",
   seed = 20260416L,
-  output_file = "survival_ite_ci_results.csv",
+  output_file = "survival_ite_ci_results.xlsx",
   verbose = TRUE
 )
+
+
+############绘图函数###########################
+
+library(here)
+here()
+  df2<- read_csv(here("results", "survival_ite_ci_test_results.csv"))
+  df2$ite_hat <- as.numeric(df2$ite_hat)
+  df2$ite_ci_lower <- as.numeric(df2$ite_ci_lower)
+  df2$ite_ci_upper <- as.numeric(df2$ite_ci_upper)
+  head(df2)
+  
+# 准备数据：创建Rank列
+# 按ite_hat从高到低排序，创建Rank列
+df2_ranked <- df2 %>%
+  dplyr::arrange(desc(ite_hat)) %>%                        # 按ite_hat降序排序（从高到低）  
+  dplyr::mutate(Rank = dplyr::row_number())                      # 创建Rank列（1到n，1为最高分）
+
+# 查看数据摘要
+cat("\n=== 数据摘要 ===\n")
+cat(sprintf("总患者数: %d\n", nrow(df2_ranked)))
+cat(sprintf("ite_hat范围: %.6f 到 %.6f\n", 
+            min(df2_ranked$ite_hat, na.rm = TRUE),
+            max(df2_ranked$ite_hat, na.rm = TRUE)))
+cat(sprintf("ite_hat均值: %.6f\n", 
+            mean(df2_ranked$ite_hat, na.rm = TRUE)))
+cat(sprintf("ite_hat中位数: %.6f\n", 
+            median(df2_ranked$ite_hat, na.rm = TRUE)))
+
+# 绘制排名图：使用颜色渐变
+# 创建散点图，横轴为Rank，纵轴为ite_hat，颜色按ite_hat渐变
+ite_hat_rank_plot <- ggplot2::ggplot(df2_ranked, 
+                                      ggplot2::aes(x = Rank, y = ite_hat)) +
+  # 绘制置信区间带
+  ggplot2::geom_ribbon(
+    ggplot2::aes(ymin = ite_ci_lower, ymax = ite_ci_upper),
+    fill = "lightblue",
+    alpha = 0.3
+  ) +
+  # 绘制散点图
+  ggplot2::geom_point(
+    ggplot2::aes(color = ite_hat),
+    size = 3, 
+    alpha = 0.7
+  ) +                  # 点的大小和透明度
+  # 设置颜色渐变方案：从#666666be（灰色，低分）到#2d8737af（绿色，高分）均匀变化
+  ggplot2::scale_color_gradient(
+    low = "#643292",                                            # 低分颜色：灰色（带透明度）
+    high = "#04f87e",                                           # 高分颜色：绿色（带透明度）
+    name = "Benefit\nScore",                                      # 图例标题
+    guide = ggplot2::guide_colorbar(                              # 使用颜色条图例
+      title.position = "top",                                     # 标题位置在顶部
+      barwidth = 2,                                               # 颜色条宽度（垂直图例时控制宽度）
+      barheight = 20,                                             # 颜色条高度（垂直图例时控制高度，增大以拉长）
+      title.hjust = 0.5                                           # 标题水平居中
+    )
+  ) +
+  # 设置坐标轴标签和标题
+  ggplot2::labs(
+    title = "Predicted individualized treatment effect for each patient",  # 主标题
+    x = "Patients ranked by predicted individualized treatment effect",    # x轴标签
+    y = "Predicted individualized treatment effect"                      # y轴标签
+  ) +
+  # 设置主题样式，与之前图表一致
+  ggplot2::theme(
+    axis.title.x = element_text(size = 24, face = "bold", color = "#000000"),  # x轴标题：24号字体，加粗，黑色
+    axis.title.y = element_text(size = 24, face = "bold", color = "#000000"),  # y轴标题：24号字体，加粗，黑色
+    axis.text.x = element_text(size = 22, color = "#000000"),                  # x轴刻度标签：22号字体，黑色
+    axis.text.y = element_text(size = 22, color = "#000000"),                  # y轴刻度标签：22号字体，黑色
+    legend.title = element_text(size = 22, face = "bold", color = "#000000"),  # 图例标题：22号字体，加粗，黑色
+    legend.text = element_text(size = 20, color = "#000000"),                  # 图例文字：20号字体，黑色
+    legend.position = "right",                                                 # 图例位置：右侧
+    plot.title = element_text(size = 24, face = "bold", color = "#000000",     # 主标题：24号字体，加粗，黑色
+                              hjust = 0.5),                                     # 标题居中
+    plot.subtitle = element_text(size = 22, color = "#000000"),                # 副标题：22号字体，黑色
+    # 添加边框线
+    panel.border = element_rect(color = "#000000", fill = NA, linewidth = 0.8), # 黑色边框，线宽0.8
+    # 设置背景颜色为白色
+    panel.background = element_rect(fill = "#FFFFFF"),                         # 白色背景
+    # 设置网格线颜色为白色（隐藏网格线）
+    panel.grid.major = element_line(color = "#FFFFFF"),                         # 主网格线为白色（不可见）
+    panel.grid.minor = element_line(color = "#FFFFFF")                           # 次网格线为白色（不可见）
+  )
+
+# 显示图形
+print(ite_hat_rank_plot)
+
+# 直接保存到当前目录
+cat("Saving PDF to ite_hat_ranked_plot.pdf...\n")
+pdf("ite_hat_ranked_plot_test.pdf", width = 12, height = 8)
+print(ite_hat_rank_plot)
+dev.off()
+cat("PDF saved successfully to current directory\n")
+
+
